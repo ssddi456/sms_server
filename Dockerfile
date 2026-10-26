@@ -1,24 +1,19 @@
-FROM python:3.9-slim
-
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
 
-# 安装 git 用于拉取最新代码
-RUN apt-get update && apt-get install -y git && apt-get clean
+COPY go.mod go.sum ./
+RUN go mod download
 
-# 拉取最新代码（请确保仓库为public，否则需要处理身份验证）
-RUN git clone https://github.com/nmhjklnm/sms_server.git .
+COPY . .
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /app/sms-server ./cmd/server
 
-# 安装依赖
-RUN pip install --no-cache-dir -r requirements.txt
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+WORKDIR /app
 
-# 创建数据目录
+COPY --from=builder /app/sms-server /app/sms-server
 RUN mkdir -p /app/data
 
-# 确保数据目录有正确的权限
-RUN chmod -R 755 /app/data
-
-# 暴露应用端口
 EXPOSE 8322
 
-# 运行应用
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8322"]
+CMD ["/app/sms-server"]

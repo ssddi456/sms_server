@@ -1,138 +1,186 @@
-# SMS接收服务器
+# SMS 转发服务器
 
-一个为 [SmsForwarder](https://github.com/pppscn/SmsForwarder) 提供 webhook 通道支持的服务端平台，具备实时接收短信、自动提取验证码、历史记录查询等功能。
+这是一个基于 Go 的短信接收服务，支持通过 HTTP webhook 接收短信，自动提取验证码，并提供历史记录查询。默认子路径采用 `/sms`，可通过 Nginx 反向代理转发到该服务。
 
-## 核心功能
+## 功能概览
 
-- 📥 **短信接收**：支持来自 SmsForwarder 的 webhook 消息接入
-- 🔎 **验证码自动提取**：自动识别短信中的验证码
-- 🗂 **历史记录查询**：支持按手机号和时间段查询
-- 🔄 **实时更新**：前端自动刷新获取新消息
-- 🌐 **多平台兼容**：支持 Web 界面和 API 调用
+- 接收短信 webhook：`POST /sms/webhook`
+- 健康检查：`GET /sms/healthz`
+- 历史查询：`GET /sms/history?limit=20&page=1`
+- 自动提取短信验证码（4~8 位数字）
+- 结构化日志：request_id、method、path、status、latency、error
+- SQLite 持久化
+- Docker 支持与 Nginx 子路径转发示例
 
-## 项目结构概览
+## 目录结构
 
-```
+```text
 sms_server
-├── backend               # 后端服务
-│   ├── main.py           # FastAPI 应用入口
-│   ├── routes            # API 路由
-│   ├── services          # 核心业务逻辑
-│   ├── models            # 数据库与 Pydantic 模型
-│   ├── middlewares       # 日志等中间件
-│   ├── utils             # 工具模块
-│   └── config            # 配置模块
-├── frontend              # 前端模板和静态资源
-├── data                  # 数据文件夹 (SQLite)
-├── Dockerfile            # Docker 支持
-├── sms_service.sh        # systemd 服务安装脚本
-├── requirements.txt      # Python 依赖
-└── README.md             # 项目说明
+├── cmd
+│   └── server
+│       └── main.go
+├── deploy
+│   └── nginx
+│       └── sms_subpath.conf
+├── internal
+│   ├── config
+│   │   └── config.go
+│   ├── handler
+│   │   └── handlers.go
+│   ├── logging
+│   │   └── logger.go
+│   ├── middleware
+│   │   └── requestlog.go
+│   ├── service
+│   │   └── sms.go
+│   └── store
+│       └── store.go
+├── Dockerfile
+├── go.mod
+├── .env.example
+├── README.md
+└── data
 ```
 
-## 快速安装
-
-### 方式1：本地安装运行
+## 本地运行
 
 ```bash
-git clone <仓库地址>
-cd sms_server
-pip install -r requirements.txt
-cp .env.example .env   # 并根据需要修改配置
-uvicorn backend.main:app --host 0.0.0.0 --port 8322 --reload
+go mod download
+mkdir -p data
+PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
 ```
 
-### 方式2：Docker 一键部署
+访问：
+
+- 健康检查：`http://127.0.0.1:8322/sms/healthz`
+- 历史记录：`http://127.0.0.1:8322/sms/history?limit=20&page=1`
+
+## API 说明
+
+### 1) 接收短信 webhook
 
 ```bash
-docker build -t sms-server .
-docker run -d --name sms-server -p 8322:8322 -v $(pwd)/data:/app/data sms-server
+curl -X POST http://127.0.0.1:8322/sms/webhook \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "from": "10086",
+    "contact_name": "中国移动",
+    "phone_area": "86",
+    "sms": "您的验证码是123456，请在5分钟内完成验证。",
+    "sim_slot": "SIM1(13800138000)",
+    "sim_sub_id": "1",
+    "device_name": "DemoPhone",
+    "receive_time": "2025-03-15T14:30:00Z"
+  }'
 ```
 
-### 方式3：注册为 systemd 服务
+返回示例：
 
-```bash
-sudo bash sms_service.sh
-sudo systemctl status sms-webhook.service
-```
-
----
-
-## 配置教程（带图示）
-
-<img width="440" alt="Code 2025-03-23 02 40 55" src="https://github.com/user-attachments/assets/343be2c5-cc7c-4bb8-bf5f-de749af3e329" />
-
-
->  图片示例：
-```
-https://sms.nextmind.space/v1/sms/receive
-```
-以及
-
-```
-{
-  "from": "{{FROM}}",
-  "contact_name": "{{CONTACT_NAME}}",
-  "phone_area": "{{PHONE_AREA}}",
-  "sms": "{{SMS}}",
-  "sim_slot": "{{CARD_SLOT}}",
-  "sim_sub_id": "{{CARD_SUBID}}",
-  "device_name": "{{DEVICE_NAME}}",
-  "receive_time": "{{RECEIVE_TIME}}"
-}
-```
-
-
----
-
-## 常用 API 示例
-
-### 📩 接收短信
-
-```bash
-POST /v1/sms/receive
-```
 ```json
 {
-  "from": "+1234567890",
-  "contact_name": "验证码服务",
-  "sms": "您的验证码是: 123456，请在5分钟内使用。",
-  "sim_slot": "13800138000",
-  "receive_time": "2023-04-01T12:00:00Z"
+  "result": "ok",
+  "code": "SUCCESS",
+  "message": "短信接收成功",
+  "data": {
+    "id": 1,
+    "extracted_code": "123456",
+    "phone_number": "13800138000"
+  }
 }
 ```
 
-### 🔎 查询验证码
+### 2) 健康检查
 
 ```bash
-GET /v1/sms/code?phone_number=13800138000
+curl http://127.0.0.1:8322/sms/healthz
 ```
 
-### 🗂 获取历史记录
+### 3) 历史查询
 
 ```bash
-GET /v1/sms/history?limit=10&offset=0
+curl 'http://127.0.0.1:8322/sms/history?limit=20&page=1'
 ```
 
----
+## 兼容性说明
 
-## 前端界面
+为了确保与旧服务的兼容性，本服务同时保留旧路由：
 
-- 首页：`http://<你的IP>:8322/`
-- 在线文档：`http://<你的IP>:8322/docs`
+- `POST /v1/sms/receive`
+- `GET /v1/sms/history`
+- `GET /v1/sms/healthz`
 
-**前端支持功能**：
-- 查看最近短信
-- 按手机号快速查询验证码
-- 详细查看短信内容
+其中 `/sms` 是推荐路径，适合 Nginx 子路径代理。 
 
----
+## 环境变量
 
-## 开发与贡献
+```bash
+PORT=8322
+HOST=0.0.0.0
+DATA_DIR=./data
+LOG_LEVEL=info
+GIN_MODE=release
+```
 
-欢迎提 issue 或 pull request，让这个项目变得更好！
+## Docker 部署
+
+### 构建镜像
+
+```bash
+docker build -t sms-server-go .
+```
+
+### 运行容器
+
+```bash
+docker run -d --name sms-server-go \
+  -p 8322:8322 \
+  -v $(pwd)/data:/app/data \
+  sms-server-go
+```
+
+## Nginx 子路径转发示例
+
+配置文件：`deploy/nginx/sms_subpath.conf`
+
+```nginx
+server {
+    listen 80;
+    server_name sms.example.com;
+
+    location /sms/ {
+        proxy_pass http://127.0.0.1:8322/sms/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
+    location / {
+        return 404;
+    }
+}
+```
+
+## 测试
+
+```bash
+go test ./...
+```
+
+## 变更说明
+
+本版本已从 Python/FastAPI 重构为 Go 服务，目标是：
+
+- 更快启动与更低资源占用
+- 更容易部署在容器和 VPS 环境
+- 更清晰的日志结构与更稳定的 API 兼容性
+- 统一使用 `/sms` 子路径承接功能
 
 ## 许可证
 
-MIT License，详情请见 LICENSE 文件。
-
+MIT
