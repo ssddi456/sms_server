@@ -1,163 +1,166 @@
-package store
+package handler
 
 import (
-	"database/sql"
-	"fmt"
-	"os"
-	"path/filepath"
-	"time"
+	"net/http"
+	"strconv"
+	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/ssddi456/sms_server/internal/service"
+	"github.com/gin-gonic/gin"
+	"github.com/ssddi456/sms_server/internal/logging"
+	"github.com/ssddi456/sms_server/internal/store"
 )
 
-type WebhookRequest struct {
-	From        string    `json:"from"`
-	ContactName string    `json:"contact_name"`
-	PhoneArea   string    `json:"phone_area"`
-	SMS         string    `json:"sms"`
-	SimSlot     string    `json:"sim_slot"`
-	SimSubID    string    `json:"sim_sub_id"`
-	DeviceName  string    `json:"device_name"`
-	ReceiveTime time.Time `json:"receive_time"`
+type Handler struct {
+	Store  *store.Store
+	Logger *logging.Logger
 }
 
-type SMSRecord struct {
-	ID            int       `json:"id"`
-	From          string    `json:"from"`
-	ContactName   string    `json:"contact_name,omitempty"`
-	PhoneArea     string    `json:"phone_area,omitempty"`
-	SMS           string    `json:"sms"`
-	SimSlot       string    `json:"sim_slot,omitempty"`
-	SimSubID      string    `json:"sim_sub_id,omitempty"`
-	DeviceName    string    `json:"device_name,omitempty"`
-	ReceiveTime   time.Time `json:"receive_time"`
-	ExtractedCode string    `json:"extracted_code,omitempty"`
-	PhoneNumber   string    `json:"phone_number,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+func New(store *store.Store, logger *logging.Logger) *Handler {
+	return &Handler{Store: store, Logger: logger}
 }
 
-type Store struct {
-	db *sql.DB
+func (h *Handler) Health(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"result":  "ok",
+		"code":    "SUCCESS",
+		"message": "ok",
+		"data": gin.H{
+			"status": "healthy",
+		},
+	})
 }
 
-func NewStore(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, err
+func (h *Handler) Webhook(c *gin.Context) {
+	var req store.WebhookRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logRequest("invalid_json", c, map[string]interface{}{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"result":  "error",
+			"code":    "INVALID_JSON",
+			"message": "invalid request body",
+		})
+		return
 	}
-	path := filepath.Join(dataDir, "sms.db")
-	db, err := sql.Open("sqlite3", path)
+	if strings.TrimSpace(req.SMS) == "" {
+		h.logRequest("invalid_param", c, map[string]interface{}{"error": "sms is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"result":  "error",
+			"code":    "INVALID_PARAM",
+			"message": "sms is required",
+		})
+		return
+	}
+	if strings.TrimSpace(req.From) == "" {
+		h.logRequest("invalid_param", c, map[string]interface{}{"error": "from is required"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"result":  "error",
+			"code":    "INVALID_PARAM",
+			"message": "from is required",
+		})
+		return
+	}
+
+	rec, err := h.Store.SaveWebhook(req)
 	if err != nil {
-		return nil, err
+		h.logRequest("store_error", c, map[string]interface{}{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"result":  "error",
+			"code":    "STORE_ERROR",
+			"message": "failed to store sms",
+		})
+		return
 	}
-	if err := db.Ping(); err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS sms_records (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			from_phone TEXT NOT NULL,
-			contact_name TEXT,
-			phone_area TEXT,
-			sms TEXT NOT NULL,
-			sim_slot TEXT,
-			sim_sub_id TEXT,
-			device_name TEXT,
-			receive_time TEXT NOT NULL,
-			extracted_code TEXT,
-			phone_number TEXT,
-			created_at TEXT NOT NULL
-		);`); err != nil {
-		return nil, err
-	}
-	return &Store{db: db}, nil
+
+	h.Logger.Info("sms_received", map[string]interface{}{
+		"request_id":     c.GetString("request_id"),
+		"from":           rec.From,
+		"phone_number":   maskPhone(rec.PhoneNumber),
+		"extracted_code": rec.ExtractedCode,
+		"sms_preview":    maskSMS(rec.SMS),
+		"receive_time":   rec.ReceiveTime.Format("2006-01-02T15:04:05Z07:00"),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"result":  "ok",
+		"code":    "SUCCESS",
+		"message": "短信接收成功",
+		"data": gin.H{
+			"id":             rec.ID,
+			"extracted_code": rec.ExtractedCode,
+			"phone_number":   rec.PhoneNumber,
+		},
+	})
 }
 
-func (s *Store) SaveWebhook(req WebhookRequest) (SMSRecord, error) {
-	if strings := req.SMS; strings == "" {
-		return SMSRecord{}, fmt.Errorf("sms is required")
-	}
-	if req.From == "" {
-		return SMSRecord{}, fmt.Errorf("from is required")
-	}
-
-	receiveTime := req.ReceiveTime
-	if receiveTime.IsZero() {
-		receiveTime = time.Now().UTC()
-	}
-	code := service.ExtractCode(req.SMS)
-	phone := service.ExtractPhoneNumber(req.SimSlot)
-
-	createdAt := time.Now().UTC()
-	result, err := s.db.Exec(
-		`INSERT INTO sms_records (from_phone, contact_name, phone_area, sms, sim_slot, sim_sub_id, device_name, receive_time, extracted_code, phone_number, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.From,
-		req.ContactName,
-		req.PhoneArea,
-		req.SMS,
-		req.SimSlot,
-		req.SimSubID,
-		req.DeviceName,
-		receiveTime.UTC().Format(time.RFC3339),
-		code,
-		phone,
-		createdAt.UTC().Format(time.RFC3339),
-	)
-	if err != nil {
-		return SMSRecord{}, err
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return SMSRecord{}, err
-	}
-	return SMSRecord{
-		ID:            int(id),
-		From:          req.From,
-		ContactName:   req.ContactName,
-		PhoneArea:     req.PhoneArea,
-		SMS:           req.SMS,
-		SimSlot:       req.SimSlot,
-		SimSubID:      req.SimSubID,
-		DeviceName:    req.DeviceName,
-		ReceiveTime:   receiveTime,
-		ExtractedCode: code,
-		PhoneNumber:   phone,
-		CreatedAt:     createdAt,
-	}, nil
-}
-
-func (s *Store) History(limit, offset int) ([]SMSRecord, error) {
-	if limit <= 0 {
+func (h *Handler) History(c *gin.Context) {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit <= 0 {
 		limit = 20
 	}
 	if limit > 100 {
 		limit = 100
 	}
-	if offset < 0 {
-		offset = 0
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page <= 0 {
+		page = 1
 	}
+	offset := (page - 1) * limit
 
-	rows, err := s.db.Query(`
-		SELECT id, from_phone, contact_name, phone_area, sms, sim_slot, sim_sub_id, device_name, receive_time, extracted_code, phone_number, created_at
-		FROM sms_records
-		ORDER BY created_at DESC
-		LIMIT ? OFFSET ?`, limit, offset)
+	records, err := h.Store.History(limit, offset)
 	if err != nil {
-		return nil, err
+		h.logRequest("history_error", c, map[string]interface{}{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"result":  "error",
+			"code":    "QUERY_ERROR",
+			"message": "failed to query history",
+		})
+		return
 	}
-	defer rows.Close()
 
-	var records []SMSRecord
-	for rows.Next() {
-		var r SMSRecord
-		var receiveTime, createdAt string
-		if err := rows.Scan(&r.ID, &r.From, &r.ContactName, &r.PhoneArea, &r.SMS, &r.SimSlot, &r.SimSubID, &r.DeviceName, &receiveTime, &r.ExtractedCode, &r.PhoneNumber, &createdAt); err != nil {
-			return nil, err
-		}
-		r.ReceiveTime, _ = time.Parse(time.RFC3339, receiveTime)
-		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		records = append(records, r)
+	c.JSON(http.StatusOK, gin.H{
+		"result":  "ok",
+		"code":    "SUCCESS",
+		"message": "ok",
+		"data": gin.H{
+			"page":  page,
+			"limit": limit,
+			"items": records,
+		},
+	})
+}
+
+func (h *Handler) logRequest(event string, c *gin.Context, fields map[string]interface{}) {
+	if h.Logger == nil {
+		return
 	}
-	return records, nil
+	payload := map[string]interface{}{
+		"request_id": c.GetString("request_id"),
+		"method":     c.Request.Method,
+		"path":       c.Request.URL.Path,
+		"event":      event,
+	}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	h.Logger.Error(event, payload)
+}
+
+func maskPhone(phone string) string {
+	if phone == "" {
+		return ""
+	}
+	if len(phone) <= 4 {
+		return "****"
+	}
+	if len(phone) <= 7 {
+		return phone[:3] + "****"
+	}
+	return phone[:3] + "****" + phone[len(phone)-2:]
+}
+
+func maskSMS(s string) string {
+	if len(s) <= 12 {
+		return "****"
+	}
+	return s[:6] + "..." + s[len(s)-4:]
 }

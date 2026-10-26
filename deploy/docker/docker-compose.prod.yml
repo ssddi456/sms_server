@@ -1,0 +1,11 @@
+services:
+  sms-server:
+    image: ${SMS_SERVER_IMAGE:-sms-server-go:latest}
+    container_name: sms-server
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8322}:${PORT:-8322}"
+    env_file:
+      - ../../.env
+    volumes:
+      - ../../data:/app/data
