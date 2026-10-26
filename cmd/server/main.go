@@ -25,24 +25,31 @@ func main() {
 
 	h := handler.New(storeInstance, logger)
 	r := gin.New()
+	r.LoadHTMLFiles("frontend/templates/ui.html")
+	r.Static("/sms/assets", "frontend/static")
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.RequestLog(logger))
 
+	reportAuth := middleware.ReportKeysAuth(cfg.ReportAuthKeys, logger)
+
 	smsGroup := r.Group("/sms")
+	smsGroup.GET("/ui", h.UI)
 	smsGroup.GET("/healthz", h.Health)
-	smsGroup.POST("/webhook", h.Webhook)
-	smsGroup.GET("/history", h.History)
+	smsGroup.POST("/webhook", reportAuth, h.Webhook)
+	smsGroup.GET("/history", reportAuth, h.History)
 
 	legacyGroup := r.Group("/v1/sms")
 	legacyGroup.GET("/healthz", h.Health)
-	legacyGroup.POST("/receive", h.Webhook)
-	legacyGroup.GET("/history", h.History)
+	legacyGroup.POST("/receive", reportAuth, h.Webhook)
+	legacyGroup.GET("/history", reportAuth, h.History)
 
 	logger.Info("server_start", map[string]interface{}{
-		"host":     cfg.Host,
-		"port":     cfg.Port,
-		"data_dir": cfg.DataDir,
+		"host":                  cfg.Host,
+		"port":                  cfg.Port,
+		"data_dir":              cfg.DataDir,
+		"report_auth_enabled":   len(cfg.ReportAuthKeys) > 0,
+		"report_auth_keys_count": len(cfg.ReportAuthKeys),
 	})
 	fmt.Printf("listening on %s\n", cfg.ListenAddr)
 	if err := r.Run(cfg.ListenAddr); err != nil {

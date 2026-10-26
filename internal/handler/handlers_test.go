@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -48,9 +50,11 @@ func newTestRouter(t *testing.T) (*gin.Engine, *store.Store) {
 
 	h := New(st, logging.NewLogger("info"))
 	r := gin.New()
+	r.SetHTMLTemplate(template.Must(template.New("ui.html").Parse("ui page")))
 	r.POST("/sms/webhook", h.Webhook)
 	r.POST("/v1/sms/receive", h.Webhook)
 	r.GET("/sms/history", h.History)
+	r.GET("/sms/ui", h.UI)
 	return r, st
 }
 
@@ -58,6 +62,15 @@ func postJSON(t *testing.T, r *gin.Engine, path, body string) *httptest.Response
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func postForm(t *testing.T, r *gin.Engine, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
@@ -171,6 +184,33 @@ func TestWebhookHandler_InvalidRequestCases(t *testing.T) {
 	}
 }
 
+func TestWebhookHandler_AcceptsFormEncodedPayload(t *testing.T) {
+	r, st := newTestRouter(t)
+	defer st.Close()
+
+	form := url.Values{}
+	form.Set("from", "10010")
+	form.Set("sms", "验证码 654321")
+	form.Set("sim_slot", "SIM1(13900001111)")
+	form.Set("device_name", "TestPhone")
+
+	w := postForm(t, r, "/sms/webhook", form)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp webhookResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Code != "SUCCESS" {
+		t.Fatalf("code=%s want SUCCESS", resp.Code)
+	}
+	if resp.Data.ExtractedCode != "654321" {
+		t.Fatalf("extracted_code=%s want 654321", resp.Data.ExtractedCode)
+	}
+}
+
 func TestHistoryHandler_PaginationFallback(t *testing.T) {
 	r, st := newTestRouter(t)
 	defer st.Close()
@@ -203,5 +243,21 @@ func TestHistoryHandler_PaginationFallback(t *testing.T) {
 	}
 	if resp.Data.Page != 1 {
 		t.Fatalf("page=%d want 1", resp.Data.Page)
+	}
+}
+
+func TestUIHandler_ReturnsHTML(t *testing.T) {
+	r, st := newTestRouter(t)
+	defer st.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/sms/ui", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "ui page") {
+		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 }

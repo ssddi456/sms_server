@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
+	"net/url"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ssddi456/sms_server/internal/logging"
@@ -30,16 +34,54 @@ func (h *Handler) Health(c *gin.Context) {
 	})
 }
 
+func (h *Handler) UI(c *gin.Context) {
+	c.HTML(http.StatusOK, "ui.html", gin.H{
+		"title": "SMS 历史记录",
+	})
+}
+
 func (h *Handler) Webhook(c *gin.Context) {
-	var req store.WebhookRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logRequest("invalid_json", c, map[string]interface{}{"error": err.Error()})
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		h.logRequest("invalid_body", c, map[string]interface{}{"error": err.Error()})
 		c.JSON(http.StatusBadRequest, gin.H{
 			"result":  "error",
-			"code":    "INVALID_JSON",
+			"code":    "INVALID_BODY",
 			"message": "invalid request body",
 		})
 		return
+	}
+
+	var req store.WebhookRequest
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		contentType := c.ContentType()
+		allowFormFallback := contentType == "" ||
+			contentType == "application/x-www-form-urlencoded" ||
+			contentType == "multipart/form-data"
+		if !allowFormFallback {
+			h.logRequest("invalid_json", c, map[string]interface{}{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{
+				"result":  "error",
+				"code":    "INVALID_JSON",
+				"message": "invalid request body",
+			})
+			return
+		}
+
+		values, formErr := url.ParseQuery(string(rawBody))
+		if formErr != nil {
+			h.logRequest("invalid_body", c, map[string]interface{}{
+				"json_error": err.Error(),
+				"form_error": formErr.Error(),
+			})
+			c.JSON(http.StatusBadRequest, gin.H{
+				"result":  "error",
+				"code":    "INVALID_BODY",
+				"message": "invalid request body",
+			})
+			return
+		}
+		req = normalizeFormWebhook(values)
 	}
 	if strings.TrimSpace(req.SMS) == "" {
 		h.logRequest("invalid_param", c, map[string]interface{}{"error": "sms is required"})
@@ -90,6 +132,35 @@ func (h *Handler) Webhook(c *gin.Context) {
 			"phone_number":   rec.PhoneNumber,
 		},
 	})
+}
+
+func normalizeFormWebhook(values url.Values) store.WebhookRequest {
+	req := store.WebhookRequest{
+		From:        firstNonEmpty(values.Get("from"), values.Get("sender"), values.Get("phone")),
+		ContactName: firstNonEmpty(values.Get("contact_name"), values.Get("contactName")),
+		PhoneArea:   firstNonEmpty(values.Get("phone_area"), values.Get("phoneArea")),
+		SMS:         firstNonEmpty(values.Get("sms"), values.Get("msg"), values.Get("message"), values.Get("content"), values.Get("text")),
+		SimSlot:     firstNonEmpty(values.Get("sim_slot"), values.Get("simSlot")),
+		SimSubID:    firstNonEmpty(values.Get("sim_sub_id"), values.Get("simSubId"), values.Get("simSubID")),
+		DeviceName:  firstNonEmpty(values.Get("device_name"), values.Get("deviceName")),
+	}
+	receiveTimeText := firstNonEmpty(values.Get("receive_time"), values.Get("receiveTime"))
+	if receiveTimeText != "" {
+		if t, err := time.Parse(time.RFC3339, receiveTimeText); err == nil {
+			req.ReceiveTime = t
+		}
+	}
+	return req
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (h *Handler) History(c *gin.Context) {

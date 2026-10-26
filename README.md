@@ -7,6 +7,8 @@
 - 接收短信 webhook：`POST /sms/webhook`
 - 健康检查：`GET /sms/healthz`
 - 历史查询：`GET /sms/history?limit=20&page=1`
+- UI 页面：`GET /sms/ui`
+- 支持上报/历史接口 key 鉴权（支持 key 轮换）
 - 自动提取短信验证码（4~8 位数字）
 - 结构化日志：request_id、method、path、status、latency、error
 - SQLite 持久化
@@ -62,6 +64,15 @@ PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
 
 - 健康检查：`http://127.0.0.1:8322/sms/healthz`
 - 历史记录：`http://127.0.0.1:8322/sms/history?limit=20&page=1`
+- UI 页面：`http://127.0.0.1:8322/sms/ui`
+
+UI 页面说明：
+
+- 页面顶部可输入查询 key，点击“保存”后会写入浏览器 `localStorage`（键名：`sms_report_auth_key`）。
+- 历史查询请求会自动带上该 key（`X-Report-Key`）。
+- 页面会展示已拼接 key 的 webhook 地址，可一键复制用于第三方回调配置。
+- 页面顶部“下载 SmsForwarder”按钮会弹窗展示下载地址与二维码（下载地址：`/downloads/SmsF_3.5.0.260224_100055_universal_release.apk`）。
+- 二维码在浏览器端通过 JavaScript 本地生成（本地静态脚本 `/sms/assets/qrcode.min.js`），不依赖外部二维码 API。
 
 ## API 说明
 
@@ -70,6 +81,7 @@ PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
 ```bash
 curl -X POST http://127.0.0.1:8322/sms/webhook \
   -H 'Content-Type: application/json' \
+  -H 'X-Report-Key: <your-report-key>' \
   -d '{
     "from": "10086",
     "contact_name": "中国移动",
@@ -97,6 +109,13 @@ curl -X POST http://127.0.0.1:8322/sms/webhook \
 }
 ```
 
+兼容性说明：
+
+- 支持 `application/json`（推荐）和 `application/x-www-form-urlencoded`（SmsForwarder 的“测试请求”常用）两种请求体。
+- 必填字段仍为 `from` 与 `sms`（表单模式下也可兼容 `sender`/`phone` 和 `msg`/`message`/`content`）。
+
+> 若未配置 `REPORT_AUTH_KEY`，可不传 `X-Report-Key`；若配置了该变量，则上报接口必须携带正确密钥。
+
 ### 2) 健康检查
 
 ```bash
@@ -106,7 +125,8 @@ curl http://127.0.0.1:8322/sms/healthz
 ### 3) 历史查询
 
 ```bash
-curl 'http://127.0.0.1:8322/sms/history?limit=20&page=1'
+curl 'http://127.0.0.1:8322/sms/history?limit=20&page=1' \
+  -H 'X-Report-Key: <your-report-key>'
 ```
 
 ## 兼容性说明
@@ -127,7 +147,23 @@ HOST=0.0.0.0
 DATA_DIR=./data
 LOG_LEVEL=info
 GIN_MODE=release
+REPORT_AUTH_KEY=
+REPORT_AUTH_KEYS=
 ```
+
+说明：
+
+- 当 `REPORT_AUTH_KEY` 与 `REPORT_AUTH_KEYS` 都为空时，上报/历史接口不做鉴权（兼容旧客户端）。
+- 当配置了任一 key 后，以下接口必须携带正确 key：
+  - `POST /sms/webhook`
+  - `POST /v1/sms/receive`
+  - `GET /sms/history`
+  - `GET /v1/sms/history`
+- 可通过 `REPORT_AUTH_KEYS` 配置多个 key（逗号分隔）用于轮换，`REPORT_AUTH_KEY` 也会自动并入可用 key 集合。
+- 请求可通过以下任一方式传递 key：
+  - `X-Report-Key: <key>`，或
+  - `Authorization: Bearer <key>`，或
+  - URL 查询参数：`?report_key=<key>`（适合仅支持 URL 的第三方上报）
 
 ## Docker 部署
 
@@ -230,8 +266,21 @@ server {
     listen 80;
     server_name sms.example.com;
 
-    location /sms/ {
+    location ^~ /sms/ {
         proxy_pass http://127.0.0.1:8322/sms/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
+    location ^~ /v1/sms/ {
+        proxy_pass http://127.0.0.1:8322/v1/sms/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -248,6 +297,8 @@ server {
     }
 }
 ```
+
+若站点还有静态资源正则（例如 `location ~* \.(js|css|png...)`），请保留 `^~ /sms/` 前缀，避免 `/sms/assets/*.js` 被静态规则抢占导致 404。
 
 ## 测试
 

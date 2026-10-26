@@ -63,3 +63,6 @@ htmlcov/
 # 部署相关
 *.pem
 *.key
+
+# Go 依赖
+vendor/

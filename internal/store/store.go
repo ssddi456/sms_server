@@ -13,14 +13,14 @@ import (
 )
 
 type WebhookRequest struct {
-	From        string    `json:"from"`
-	ContactName string    `json:"contact_name"`
-	PhoneArea   string    `json:"phone_area"`
-	SMS         string    `json:"sms"`
-	SimSlot     string    `json:"sim_slot"`
-	SimSubID    string    `json:"sim_sub_id"`
-	DeviceName  string    `json:"device_name"`
-	ReceiveTime time.Time `json:"receive_time"`
+	From        string    `json:"from" form:"from"`
+	ContactName string    `json:"contact_name" form:"contact_name"`
+	PhoneArea   string    `json:"phone_area" form:"phone_area"`
+	SMS         string    `json:"sms" form:"sms"`
+	SimSlot     string    `json:"sim_slot" form:"sim_slot"`
+	SimSubID    string    `json:"sim_sub_id" form:"sim_sub_id"`
+	DeviceName  string    `json:"device_name" form:"device_name"`
+	ReceiveTime time.Time `json:"receive_time" form:"receive_time"`
 }
 
 type SMSRecord struct {
