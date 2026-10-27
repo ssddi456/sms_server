@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,7 +49,6 @@ func newTestRouter(t *testing.T) (*gin.Engine, *store.Store) {
 
 	h := New(st, logging.NewLogger("info"))
 	r := gin.New()
-	r.SetHTMLTemplate(template.Must(template.New("ui.html").Parse("ui page")))
 	r.POST("/sms/webhook", h.Webhook)
 	r.POST("/v1/sms/receive", h.Webhook)
 	r.GET("/sms/history", h.History)
@@ -254,10 +252,10 @@ func TestUIHandler_ReturnsHTML(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "ui page") {
-		t.Fatalf("unexpected body: %s", w.Body.String())
+	if location := w.Header().Get("Location"); location != "/sms/assets/app/index.html" {
+		t.Fatalf("location=%s want %s", location, "/sms/assets/app/index.html")
 	}
 }

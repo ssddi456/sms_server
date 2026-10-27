@@ -66,3 +66,4 @@ htmlcov/
 
 # Go 依赖
 vendor/
+node_modules/

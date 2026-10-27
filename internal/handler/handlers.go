@@ -35,9 +35,7 @@ func (h *Handler) Health(c *gin.Context) {
 }
 
 func (h *Handler) UI(c *gin.Context) {
-	c.HTML(http.StatusOK, "ui.html", gin.H{
-		"title": "SMS 历史记录",
-	})
+	c.Redirect(http.StatusTemporaryRedirect, "/sms/assets/app/index.html")
 }
 
 func (h *Handler) Webhook(c *gin.Context) {

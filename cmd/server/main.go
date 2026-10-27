@@ -25,7 +25,6 @@ func main() {
 
 	h := handler.New(storeInstance, logger)
 	r := gin.New()
-	r.LoadHTMLFiles("frontend/templates/ui.html")
 	r.Static("/sms/assets", "frontend/static")
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())

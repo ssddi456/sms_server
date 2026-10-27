@@ -2,6 +2,8 @@
 
 这是一个基于 Go 的短信接收服务，支持通过 HTTP webhook 接收短信，自动提取验证码，并提供历史记录查询。默认子路径采用 `/sms`，可通过 Nginx 反向代理转发到该服务。
 
+前端 UI 已升级为 **React + TypeScript + Rsbuild** 架构，支持功能/设置模块拆分与移动端适配。
+
 ## 功能概览
 
 - 接收短信 webhook：`POST /sms/webhook`
@@ -55,6 +57,8 @@ sms_server
 ## 本地运行
 
 ```bash
+npm install
+npm run build:ui
 go mod download
 mkdir -p data
 PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
@@ -68,11 +72,11 @@ PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
 
 UI 页面说明：
 
-- 页面顶部可输入查询 key，点击“保存”后会写入浏览器 `localStorage`（键名：`sms_report_auth_key`）。
-- 历史查询请求会自动带上该 key（`X-Report-Key`）。
-- 页面会展示已拼接 key 的 webhook 地址，可一键复制用于第三方回调配置。
-- 页面顶部“下载 SmsForwarder”按钮会弹窗展示下载地址与二维码（下载地址：`/downloads/SmsF_3.5.0.260224_100055_universal_release.apk`）。
-- 二维码在浏览器端通过 JavaScript 本地生成（本地静态脚本 `/sms/assets/qrcode.min.js`），不依赖外部二维码 API。
+- UI 按“功能模块 / 设置模块”拆分，设置集中在设置模块中维护。
+- 页面会先检查是否已保存查询 key。未设置时，会提示先在设置模块保存 key（`localStorage` 键名：`sms_report_auth_key`）。
+- 历史查询请求会自动携带保存后的 key（`X-Report-Key`），并支持分页查询。
+- 页面会展示已拼接 key 的 webhook 地址与兼容地址，可一键复制用于第三方回调配置。
+- 下载功能只保留标题栏按钮：移动端点击直接跳转 APK 下载；桌面端点击弹窗展示下载链接与二维码。
 
 ## API 说明
 
@@ -170,7 +174,10 @@ REPORT_AUTH_KEYS=
 ### 构建镜像
 
 ```bash
-docker build -t sms-server-go .
+docker build \
+  --build-arg GO_BASE_IMAGE=docker.m.daocloud.io/library/golang:1.22-alpine \
+  --build-arg RUNTIME_BASE_IMAGE=docker.m.daocloud.io/library/alpine:3.20 \
+  -t sms-server-go .
 ```
 
 ### 运行容器
@@ -189,13 +196,14 @@ docker run -d --name sms-server-go \
 - `scripts/deploy.ps1`
 - `scripts/deploy.bat`（Windows 入口）
 - `scripts/deploy_remote.ps1`（本地打包 + 远程上传 + 远程部署）
+- `scripts/deploy_remote_podman.ps1`（SSH 直连远端 Podman 构建并部署，推荐）
 - `deploy/docker/deploy.sh`（服务器执行部署，含健康检查与失败回滚）
 - `deploy/docker/rollback.sh`（手动回滚）
 
 脚本流程：
 
 1. `go test ./...`
-2. `docker build` 构建镜像
+2. `docker build` 构建镜像（建议使用镜像源参数，避免走 Docker 官方源）
 3. `docker save` 导出镜像并打包部署材料
 4. 生成 `build/sms-server-deploy.tar.gz`
 5. 可选：通过 `checksum + HMAC-SHA256 signature` 上传部署包
@@ -234,6 +242,8 @@ mkdir -p data
 
 ### 一键远程发布（Windows）
 
+> 说明：该脚本会在本地先执行 `docker build`。若本地无法访问 Docker 官方源，建议优先使用下方“SSH 直连部署（Podman）”方式，或先确保本地 Docker 已配置镜像加速。
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\deploy_remote.ps1 `
   -RemoteHost 203.0.113.10 `
@@ -244,11 +254,81 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy_remote.ps1 `
 
 可选参数：
 
-- `-IdentityFile C:\Users\you\.ssh\id_rsa`
+- `-IdentityFile C:\Users\you\.ssh\id_rsa_new`
 - `-SshPort 22`
 - `-HealthUrl http://127.0.0.1:8322/sms/healthz`
 - `-HealthTimeout 90`
 - `-SkipTests`
+
+### SSH 直连部署（Podman，推荐）
+
+推荐直接使用脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy_remote_podman.ps1 `
+  -RemoteHost 120.48.167.92 `
+  -RemoteUser root `
+  -RemotePath /opt/sms-server `
+  -IdentityFile "$HOME\.ssh\id_rsa_new"
+```
+
+该脚本会自动执行：
+
+1. 本地打包源码（排除 `.git`、`build`、`data`、`node_modules` 等）
+2. `scp` 上传到远端目录
+3. 远端 `podman build`（默认使用 daocloud 基础镜像）
+4. 远端重建并启动容器
+5. 远端健康检查（默认 `http://127.0.0.1:8322/sms/healthz`）
+
+常用可选参数：
+
+- `-SshPort 22`
+- `-ImageRef localhost/sms-server-go:latest`
+- `-ContainerName sms-server`
+- `-HealthUrl http://127.0.0.1:8322/sms/healthz`
+- `-HealthTimeout 120`
+- `-BindAddress 127.0.0.1`
+- `-HostPort 8322`
+- `-GoBaseImage docker.m.daocloud.io/library/golang:1.22-alpine`
+- `-RuntimeBaseImage docker.m.daocloud.io/library/alpine:3.20`
+- `-NodeBaseImage docker.m.daocloud.io/library/node:20-alpine`
+
+### SSH 直连部署（Podman，手工方式）
+
+当你不想使用脚本时，可手工执行：
+
+```powershell
+scp -i "$HOME\.ssh\id_rsa_new" -r .\* root@120.48.167.92:/opt/sms-server/
+ssh -i "$HOME\.ssh\id_rsa_new" root@120.48.167.92
+```
+
+```bash
+cd /opt/sms-server
+cp -n .env.example .env
+mkdir -p data
+
+podman build \
+  --build-arg GO_BASE_IMAGE=docker.m.daocloud.io/library/golang:1.22-alpine \
+  --build-arg RUNTIME_BASE_IMAGE=docker.m.daocloud.io/library/alpine:3.20 \
+  --build-arg NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:20-alpine \
+  -t localhost/sms-server-go:latest .
+
+podman rm -f sms-server || true
+podman run -d --name sms-server \
+  --restart unless-stopped \
+  --env-file .env \
+  -p 127.0.0.1:8322:8322 \
+  -v /opt/sms-server/data:/app/data \
+  localhost/sms-server-go:latest
+
+curl -fsS http://127.0.0.1:8322/sms/healthz
+```
+
+说明：
+
+- 该流程不依赖本地 Docker，只需要本机可用 `ssh/scp`。
+- 为避免走 Docker 官方源，建议保留上面的 `daocloud` build-arg。
+- 改动了 `frontend/static/app` 或 `frontend/static` 后，也必须重建镜像并重启容器。
 
 ### 手动回滚
 
@@ -319,6 +399,19 @@ go test ./...
 - 更容易部署在容器和 VPS 环境
 - 更清晰的日志结构与更稳定的 API 兼容性
 - 统一使用 `/sms` 子路径承接功能
+
+近期 UI 改造：
+
+- 前端架构升级为 React + TypeScript + Rsbuild
+- 拆分功能模块与设置模块，提升操作清晰度
+- 增强移动端适配，下载按钮收敛到标题栏（移动端直接下载，桌面端弹窗显示二维码）
+
+构建加速（Dockerfile 分层缓存优化）：
+
+- 前端阶段将 `npm ci` 与 `npm run build:ui` 拆成两层，仅当 `package*.json` 变化时才重装依赖。
+- Go 阶段只复制 `cmd/`、`internal/`、`go.mod`、`go.sum`、`vendor/`，前端改动不再让 Go 编译层缓存失效。
+- 对 `npm ci` 与 `go build` 启用 `--mount=type=cache` 缓存挂载，加速依赖变化时的增量构建。
+- 效果：全缓存命中的重复部署从约 180s 降至约 20s；仅改前端时跳过 Go 编译，仅改后端时跳过前端依赖安装。
 
 ## 许可证
 

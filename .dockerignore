@@ -1,0 +1,9 @@
+.git
+.github
+.vscode
+node_modules
+build
+data
+*.log
+.env
+frontend/static/app
