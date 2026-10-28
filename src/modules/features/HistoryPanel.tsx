@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchHistory } from "../../services/api";
+import { copyToClipboard } from "../../services/clipboard";
 import type { SmsRecord } from "../../types";
 
 interface HistoryPanelProps {
@@ -8,6 +9,7 @@ interface HistoryPanelProps {
 }
 
 const LIMIT = 20;
+const COPIED_FEEDBACK_MS = 1600;
 
 export function HistoryPanel({ reportKey, onRequireSettings }: HistoryPanelProps) {
   const [page, setPage] = useState(1);
@@ -17,6 +19,37 @@ export function HistoryPanel({ reportKey, onRequireSettings }: HistoryPanelProps
   const [hasMore, setHasMore] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [copyTip, setCopyTip] = useState("");
+  const copiedTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current !== null) {
+        window.clearTimeout(copiedTimer.current);
+      }
+    };
+  }, []);
+
+  const handleCopyCode = async (id: number, code?: string) => {
+    if (!code) {
+      return;
+    }
+    const ok = await copyToClipboard(code);
+    if (!ok) {
+      setCopyTip("复制失败，请手动复制。");
+      return;
+    }
+    setCopyTip("");
+    setCopiedId(id);
+    if (copiedTimer.current !== null) {
+      window.clearTimeout(copiedTimer.current);
+    }
+    copiedTimer.current = window.setTimeout(() => {
+      setCopiedId(null);
+      copiedTimer.current = null;
+    }, COPIED_FEEDBACK_MS);
+  };
 
   const toggleExpanded = (id: number) => {
     setExpandedIds((prev) => {
@@ -89,6 +122,8 @@ export function HistoryPanel({ reportKey, onRequireSettings }: HistoryPanelProps
         </button>
       </div>
 
+      {copyTip ? <div className="status-tip warn">{copyTip}</div> : null}
+
       <div className="history-list">
         <div className="history-head">
           <span>ID</span>
@@ -124,7 +159,15 @@ export function HistoryPanel({ reportKey, onRequireSettings }: HistoryPanelProps
               </span>
               <span className="h-code" data-label="验证码">
                 {item.extracted_code ? (
-                  <span className="code-badge">{item.extracted_code}</span>
+                  <button
+                    type="button"
+                    className={`code-badge clickable${copiedId === item.id ? " copied" : ""}`}
+                    title="点击复制验证码"
+                    aria-label={`复制验证码 ${item.extracted_code}`}
+                    onClick={() => void handleCopyCode(item.id, item.extracted_code)}
+                  >
+                    {copiedId === item.id ? "已复制 ✓" : item.extracted_code}
+                  </button>
                 ) : (
                   <span className="code-badge empty">-</span>
                 )}

@@ -58,7 +58,7 @@ sms_server
 
 ```bash
 npm install
-npm run build:ui
+npm run build:ui   # 生成 frontend/static/app（该目录不入库，必须本地构建）
 go mod download
 mkdir -p data
 PORT=8322 HOST=0.0.0.0 DATA_DIR=./data LOG_LEVEL=info go run ./cmd/server
@@ -328,7 +328,9 @@ curl -fsS http://127.0.0.1:8322/sms/healthz
 
 - 该流程不依赖本地 Docker，只需要本机可用 `ssh/scp`。
 - 为避免走 Docker 官方源，建议保留上面的 `daocloud` build-arg。
-- 改动了 `frontend/static/app` 或 `frontend/static` 后，也必须重建镜像并重启容器。
+- `frontend/static/app` 是 `npm run build:ui` 的构建产物，**不入库**（见 `.gitignore`）；
+  镜像内由 Dockerfile 的 Node 阶段自动生成，因此只要改动 `src/` 就会在重建时生效。
+- 改动了 `frontend/static`（非 `app` 子目录，如 `js/`、`css/`）后，也必须重建镜像并重启容器。
 
 ### 手动回滚
 
