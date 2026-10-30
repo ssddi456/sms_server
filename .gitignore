@@ -72,3 +72,4 @@ node_modules/
 
 # 前端构建产物（由 `npm run build:ui` 生成，Dockerfile 构建阶段自动产出，不入库）
 frontend/static/app/
+.tmp*
